@@ -258,10 +258,19 @@ bool ctx_process(ctx_t* ctx, wchar_t ch)
     }
   } else if (p->cho) {
     if (is_jaum(ch)) {
-      // commit is not perfect
-      ctx_commit_preedit(ctx);
-      p->cho = ch;
-      return true;
+      wchar_t combined_jong = combine_jong(p->cho, ch);
+      /* 초성을 입력한 combine 함수에서 종성이 나오게 된다면
+       * 이전 초성도 종성으로 바꿔 주는 편이 나머지 처리에 편리하다.
+       * 이 기능은 MS IME 호환기능으로 ㄳ을 입력하는데 사용한다. */
+      if (combined_jong) {
+        p->cho = 0;
+        p->jong = combined_jong;
+      } else {
+        // commit is not perfect
+        ctx_commit_preedit(ctx);
+        p->cho = ch;
+        return true;
+      }
     } else if (is_moum(ch)) {
       p->jung = ch;
     }
