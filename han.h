@@ -3,8 +3,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-bool han_is_empty();
-uint16_t han_flush();
-bool han_backspace();
-uint16_t han_preedit();
-uint16_t han_process(char key);
+typedef struct han_ctx_t_ han_ctx_t;
+
+han_ctx_t* han_new();
+void han_init(han_ctx_t* ctx);
+bool han_is_empty(han_ctx_t* ctx);
+uint16_t han_preedit(han_ctx_t* ctx);
+uint16_t han_flush(han_ctx_t* ctx);
+bool han_backspace(han_ctx_t* ctx);
+uint16_t han_process(han_ctx_t* ctx, char key);
+void han_free(han_ctx_t* ctx);

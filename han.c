@@ -1,8 +1,18 @@
+#include <stdlib.h>
 #include "han.h"
 
 #define ARR_SIZE(a) (sizeof(a) / sizeof(a[0]))
 
 enum { KEY_NONE = -1 };
+typedef enum state_t_ { S_CHO, S_JUNG, S_JONG } state_t;
+
+struct han_ctx_t_
+{
+  state_t state;
+  char cho;
+  char jung;
+  char jong;
+};
 
 /*
 // 1161 ᅡ HANGUL JUNGSEONG A
@@ -92,80 +102,120 @@ static const char JUNG_BS[] = {
   -1, -1, -1, -1, -1, -1, -1, -1, -1, _O_, _O_, _O_, -1, -1, _U_, _U_, _U_, -1, -1, _EU_, -1
 };
 
-static enum STATE { S_CHO, S_JUNG, S_JONG } state = S_CHO;
-static int16_t cho = -1, jung = -1, jong = 0;
-
-typedef struct combine_table_t
-{
-  char org;
-  char begin;
-  uint32_t mask;
-} combine_table_t;
-
-static const combine_table_t COMBINE_JUNG[] =
-{
-  //           ㅗㅏ->ㅘ,    ㅗㅐ->ㅙ,     ㅗㅣ->ㅚ
-  {_O_, _O_+1, (1 << _A_) | (1 << _AE_) | (1 << _I_)},
-  //           ㅜㅓ->ㅝ,     ㅜㅔ->ㅞ,    ㅜㅣ->ㅟ
-  {_U_, _U_+1, (1 << _EO_) | (1 << _E_) | (1 << _I_)},
-  //             ㅡㅣ->ㅢ
-  {_EU_, _EU_+1, (1 << _I_)}
+static const char COMBINE_JUNG[][3] = {
+  {_O_, _A_, _WA_}, // ㅗㅏ->ㅘ
+  {_O_, _AE_, _WAE_}, // ㅗㅐ->ㅙ
+  {_O_, _I_, _OE_}, // ㅗㅣ->ㅚ
+  {_U_, _EO_, _WEO_}, // ㅜㅓ->ㅝ
+  {_U_, _E_, _WE_}, // ㅜㅔ->ㅞ
+  {_U_, _I_, _WI_}, // ㅜㅣ->ㅟ
+  {_EU_, _I_, _YI_}, // ㅡㅣ->ㅢ
 };
 
-static const combine_table_t COMBINE_JONG[] =
-{
-  //            ㄱㅅ->ㄳ (+2 for skip ㄲ)
-  {__G, __G+2, (1 << __S)},
-  //            ㄴㅈ->ㄵ,   ㄴㅎ->ㄶ
-  {__N, __N+1, (1 << __J) | (1 << __H)},
-  //            ㄹㄱ->ㄺ,   ㄹㅁ->ㄻ,    ㄹㅂ->ㄼ,    ㄹㅅ->ㄽ,    ㄹㅌ->ㄾ,    ㄹㅍ->ㄿ,    ㄹㅎ->ㅀ
-  {__L, __L+1, (1 << __G) | (1 << __M) | (1 << __B) | (1 << __S) | (1 << __T) | (1 << __P) | (1 << __H)},
-  //            ㅂㅅ->ㅄ
-  {__B, __B+1, (1 << __S)}
+static const char COMBINE_JONG[][3] = {
+  {__G, __S, __GS}, // ㄱㅅ->ㄳ
+  {__N, __J, __NJ}, // ㄴㅈ->ㄵ
+  {__N, __H, __NH}, // ㄴㅎ->ㄶ
+  {__L, __G, __LG}, // ㄹㄱ->ㄺ
+  {__L, __M, __LM}, // ㄹㅁ->ㄻ
+  {__L, __B, __LB}, // ㄹㅂ->ㄼ
+  {__L, __S, __LS}, // ㄹㅅ->ㄽ
+  {__L, __T, __LT}, // ㄹㅌ->ㄾ
+  {__L, __P, __LP}, // ㄹㅍ->ㄿ
+  {__L, __H, __LH}, // ㄹㅎ->ㅀ
+  {__B, __S, __BS}, // ㅂㅅ->ㅄ
 };
 
-static int16_t combine(const combine_table_t* tbl, int tbl_len, char org, char input)
+static char combine(const char tbl[][3], int tbl_size, char ch1, char ch2)
 {
-  const uint32_t bit = 1 << input;
-  while (tbl_len--) {
-    if (tbl[tbl_len].org == org) {
-      const uint32_t mask = tbl[tbl_len].mask;
-      if (mask & bit) {
-        return tbl[tbl_len].begin + __builtin_popcount(mask & (bit - 1));
-      }
-      break;
+  for (int i = 0; i < tbl_size; ++i) {
+    if (ch1 == tbl[i][0] && ch2 == tbl[i][1]) {
+      return tbl[i][2];
     }
   }
   return -1;
 }
 
-static int16_t combine_jung(char org, char c)
+static char combine_jung(char ch1, char ch2)
 {
-  return combine(COMBINE_JUNG, ARR_SIZE(COMBINE_JUNG), org, c);
+  return combine(COMBINE_JUNG, ARR_SIZE(COMBINE_JUNG), ch1, ch2);
 }
 
-static int16_t combine_jong(char org, char c)
+static char combine_jong(char ch1, char ch2)
 {
-  return combine(COMBINE_JONG, ARR_SIZE(COMBINE_JONG), org, c);
+  return combine(COMBINE_JONG, ARR_SIZE(COMBINE_JONG), ch1, ch2);
 }
 
-static uint16_t make_code()
+static uint16_t make_code(han_ctx_t* ctx)
 {
   static const uint16_t CHO_UNICODE[] = {
     1, 2, 4, 7, 8, 9, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
   };
 
-  if (cho >= 0 && jung >= 0) {
-    return 0xAC00 + cho * (21 * 28) + jung * 28 + jong;
-  } else if (cho >= 0) {
-    return 0x3130 + CHO_UNICODE[cho];
-  } else if (jung >= 0) {
-    return 0x314F + jung;
+  if (ctx->cho >= 0 && ctx->jung >= 0) {
+    return 0xAC00 + ctx->cho * (21 * 28) + ctx->jung * 28 + ctx->jong;
+  } else if (ctx->cho >= 0) {
+    return 0x3130 + CHO_UNICODE[ctx->cho];
+  } else if (ctx->jung >= 0) {
+    return 0x314F + ctx->jung;
   }
   return 0;
 }
 
-uint16_t han_process(char key)
+han_ctx_t* han_new()
+{
+  han_ctx_t* ctx = (han_ctx_t*)malloc(sizeof(han_ctx_t));
+  han_init(ctx);
+  return ctx;
+}
+
+void han_init(han_ctx_t* ctx)
+{
+  ctx->state = S_CHO;
+  ctx->cho = -1;
+  ctx->jung = -1;
+  ctx->jong = 0;
+}
+
+void han_free(han_ctx_t* han)
+{
+  if (han) {
+    free(han);
+  }
+}
+
+bool han_is_empty(han_ctx_t* ctx)
+{
+  return ctx->cho == -1 && ctx->jung == -1 && ctx->jong == 0;
+}
+
+uint16_t han_preedit(han_ctx_t* ctx)
+{
+  return make_code(ctx);
+}
+
+uint16_t han_flush(han_ctx_t* ctx)
+{
+  uint16_t ret = make_code(ctx);
+  han_init(ctx);
+  return ret;
+}
+
+bool han_backspace(han_ctx_t* ctx)
+{
+  if (ctx->jong > 0) {
+    ctx->jong = JONG_BS[ctx->jong];
+  } else if (ctx->jung >= 0) {
+    ctx->jung = JUNG_BS[ctx->jung];
+  } else if (ctx->cho >= 0) {
+    ctx->cho = -1;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+uint16_t han_process(han_ctx_t* ctx, char key)
 {
   bool shift;
   int16_t c;
@@ -182,94 +232,58 @@ uint16_t han_process(char key)
   }
 
   while (key >= 0) {
-    switch (state) {
+    switch (ctx->state) {
       case S_CHO:
         c = shift ? KEY_CHO_SH[key] : KEY_CHO[key];
         if (c >= 0) {
-          if (cho == -1) {
-            cho = c;
+          if (ctx->cho == -1) {
+            ctx->cho = c;
             key = KEY_NONE;
           } else {
-            ret = make_code();
-            cho = -1;
+            ret = make_code(ctx);
+            ctx->cho = -1;
           }
         } else {
-          state = S_JUNG;
+          ctx->state = S_JUNG;
         }
         break;
 
       case S_JUNG:
         c = shift ? KEY_JUNG_SH[key] : KEY_JUNG[key];
-        if (c >= 0 && (jung == -1 || (c = combine_jung(jung, c)) >= 0)) {
-          jung = c;
+        if (c >= 0 && (ctx->jung == -1 || (c = combine_jung(ctx->jung, c)) >= 0)) {
+          ctx->jung = c;
           key = KEY_NONE;
-        } else if (cho == -1) {
-          ret = make_code();
-          jung = -1;
-          state = S_CHO;
+        } else if (ctx->cho == -1) {
+          ret = make_code(ctx);
+          ctx->jung = -1;
+          ctx->state = S_CHO;
         } else {
-          state = S_JONG;
+          ctx->state = S_JONG;
         }
         break;
 
       case S_JONG:
         c = shift ? KEY_JONG_SH[key] : KEY_JONG[key];
-        if (c >= 0 && (jong == 0 || (c = combine_jong(jong, c)) >= 0)) {
-          jong = c;
+        if (c >= 0 && (ctx->jong == 0 || (c = combine_jong(ctx->jong, c)) >= 0)) {
+          ctx->jong = c;
           key = KEY_NONE;
         } else {
           if (KEY_JUNG[key] >= 0) {
-            c = JONG_TO_CHO[jong];
-            jong = JONG_BS[jong];
+            c = JONG_TO_CHO[ctx->jong];
+            ctx->jong = JONG_BS[ctx->jong];
           } else {
             c = -1;
           }
 
-          ret = make_code();
-          cho = c;
-          jung = -1;
-          jong = 0;
-          state = S_CHO;
+          ret = make_code(ctx);
+          ctx->cho = c;
+          ctx->jung = -1;
+          ctx->jong = 0;
+          ctx->state = S_CHO;
         }
         break;
     }
   }
 
   return ret;
-}
-
-uint16_t han_preedit()
-{
-  return make_code();
-}
-
-bool han_is_empty()
-{
-  return cho == -1 && jung == -1 && jong == 0;
-}
-
-uint16_t han_flush()
-{
-  uint16_t ret = make_code();
-
-  state = S_CHO;
-  cho = -1;
-  jung = -1;
-  jong = 0;
-
-  return ret;
-}
-
-bool han_backspace()
-{
-  if (jong > 0) {
-    jong = JONG_BS[jong];
-  } else if (jung >= 0) {
-    jung = JUNG_BS[jung];
-  } else if (cho >= 0) {
-    cho = -1;
-  } else {
-    return false;
-  }
-  return true;
 }
