@@ -1,8 +1,6 @@
 #include <stdlib.h>
 #include "han.h"
 
-#define ARR_SIZE(a) (sizeof(a) / sizeof(a[0]))
-
 enum { KEY_NONE = -1 };
 typedef enum state_t_ { S_CHO, S_JUNG, S_JONG } state_t;
 
@@ -12,6 +10,7 @@ struct han_ctx_t_
   char cho;
   char jung;
   char jong;
+  han_callback_t callback;
 };
 
 /*
@@ -83,8 +82,8 @@ static const char KEY_JONG[] = {
 };
 
 static const char KEY_JONG_SH[] = {
-//  A   B    C     D     E    F    G   H   I   J   K   L   M   N   O   P    Q    R     S    T   U     V    W    X   Y    Z
-  __M, -1, __CH, __NG, __D, __L, __H, -1, -1, -1, -1, -1, -1, -1, -1, -1, __B, __GG, __N, __SS, -1, __P, __J, __T, -1, __K
+//  A   B    C     D    E    F    G   H   I   J   K   L   M   N   O   P   Q    R     S    T   U     V   W    X   Y    Z
+  __M, -1, __CH, __NG, -1, __L, __H, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, __GG, __N, __SS, -1, __P, -1, __T, -1, __K
 };
 
 static const char JONG_TO_CHO[] = {
@@ -100,6 +99,10 @@ static const char JONG_BS[] = {
 static const char JUNG_BS[] = {
 //ㅏ  ㅐ  ㅑ  ㅒ  ㅓ  ㅔ  ㅕ  ㅖ  ㅗ   ㅘ   ㅙ   ㅚ  ㅛ  ㅜ   ㅝ   ㅞ  ㅟ   ㅠ  ㅡ   ㅢ   ㅣ
   -1, -1, -1, -1, -1, -1, -1, -1, -1, _O_, _O_, _O_, -1, -1, _U_, _U_, _U_, -1, -1, _EU_, -1
+};
+
+static const char CHO_DISTANCE[] = {
+  1, 2, 4, 7, 8, 9, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
 };
 
 static const char COMBINE_JUNG[][3] = {
@@ -138,26 +141,27 @@ static char combine(const char tbl[][3], int tbl_size, char ch1, char ch2)
 
 static char combine_jung(char ch1, char ch2)
 {
-  return combine(COMBINE_JUNG, ARR_SIZE(COMBINE_JUNG), ch1, ch2);
+  return combine(COMBINE_JUNG, countof(COMBINE_JUNG), ch1, ch2);
 }
 
 static char combine_jong(char ch1, char ch2)
 {
-  return combine(COMBINE_JONG, ARR_SIZE(COMBINE_JONG), ch1, ch2);
+  return combine(COMBINE_JONG, countof(COMBINE_JONG), ch1, ch2);
 }
 
-static uint16_t make_code(han_ctx_t* ctx)
+static bool default_callback(char cho, char jung, char jong)
 {
-  static const uint16_t CHO_UNICODE[] = {
-    1, 2, 4, 7, 8, 9, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
-  };
+  return true;
+}
 
-  if (ctx->cho >= 0 && ctx->jung >= 0) {
-    return 0xAC00 + ctx->cho * (21 * 28) + ctx->jung * 28 + ctx->jong;
-  } else if (ctx->cho >= 0) {
-    return 0x3130 + CHO_UNICODE[ctx->cho];
-  } else if (ctx->jung >= 0) {
-    return 0x314F + ctx->jung;
+uint16_t make_code(char cho, char jung, char jong)
+{
+  if (cho >= 0 && jung >= 0) {
+    return L'가' + cho * (21 * 28) + jung * 28 + jong;
+  } else if (cho >= 0) {
+    return L'ㄱ'-1 + CHO_DISTANCE[cho];
+  } else if (jung >= 0) {
+    return L'ㅏ' + jung;
   }
   return 0;
 }
@@ -166,7 +170,15 @@ han_ctx_t* han_new()
 {
   han_ctx_t* ctx = (han_ctx_t*)malloc(sizeof(han_ctx_t));
   han_init(ctx);
+  han_set_callback(ctx, default_callback);
   return ctx;
+}
+
+void han_free(han_ctx_t* han)
+{
+  if (han) {
+    free(han);
+  }
 }
 
 void han_init(han_ctx_t* ctx)
@@ -177,11 +189,9 @@ void han_init(han_ctx_t* ctx)
   ctx->jong = 0;
 }
 
-void han_free(han_ctx_t* han)
+void han_set_callback(han_ctx_t* ctx, han_callback_t callback)
 {
-  if (han) {
-    free(han);
-  }
+  ctx->callback = callback;
 }
 
 bool han_is_empty(han_ctx_t* ctx)
@@ -191,12 +201,12 @@ bool han_is_empty(han_ctx_t* ctx)
 
 uint16_t han_preedit(han_ctx_t* ctx)
 {
-  return make_code(ctx);
+  return make_code(ctx->cho, ctx->jung, ctx->jong);
 }
 
 uint16_t han_flush(han_ctx_t* ctx)
 {
-  uint16_t ret = make_code(ctx);
+  uint16_t ret = han_preedit(ctx);
   han_init(ctx);
   return ret;
 }
@@ -218,7 +228,7 @@ bool han_backspace(han_ctx_t* ctx)
 uint16_t han_process(han_ctx_t* ctx, char key)
 {
   bool shift;
-  int16_t c;
+  int16_t c, c2;
   uint16_t ret = 0;
 
   if ('a' <= key && key <= 'z') {
@@ -236,14 +246,20 @@ uint16_t han_process(han_ctx_t* ctx, char key)
       case S_CHO:
         c = shift ? KEY_CHO_SH[key] : KEY_CHO[key];
         if (c >= 0) {
+          // 초성일 때
           if (ctx->cho == -1) {
+            // 기존에 입력된 초성이 없을 때
+            // 예) ㄱ
             ctx->cho = c;
             key = KEY_NONE;
           } else {
-            ret = make_code(ctx);
+            // 기존에 입력된 초성이 있을 때
+            // 예) ㄱ+ㄱ
+            ret = han_preedit(ctx);
             ctx->cho = -1;
           }
         } else {
+          // 초성에 없는 글자일 때
           ctx->state = S_JUNG;
         }
         break;
@@ -251,13 +267,28 @@ uint16_t han_process(han_ctx_t* ctx, char key)
       case S_JUNG:
         c = shift ? KEY_JUNG_SH[key] : KEY_JUNG[key];
         if (c >= 0 && (ctx->jung == -1 || (c = combine_jung(ctx->jung, c)) >= 0)) {
-          ctx->jung = c;
-          key = KEY_NONE;
+          // 중성이며, 입력된 중성이 없거나, 기존 중성과 합칠 수 있을 때
+          // 예) ㄱ+ㅗ, 고+ㅏ
+          if (ctx->callback(ctx->cho, c, 0)) {
+            // 음절 리스트에 있다면
+            ctx->jung = c;
+            key = KEY_NONE;
+          } else {
+            // 음절 리스트에 없다면
+            // 예) ㄲ+ㅒ
+            ret = han_preedit(ctx);
+            ctx->cho = -1;
+            ctx->jung = -1;
+            ctx->state = S_CHO;
+          }
         } else if (ctx->cho == -1) {
-          ret = make_code(ctx);
+          // 초성이 없고, 기존 중성과 합칠 수 없을 때 (윗 부분과 동일 로직)
+          // 예) ㅏ, ㅗ+ㅏ
+          ret = han_preedit(ctx);
           ctx->jung = -1;
           ctx->state = S_CHO;
         } else {
+          // 초성은 있으나, 중성에 없는 글자일 때
           ctx->state = S_JONG;
         }
         break;
@@ -265,17 +296,42 @@ uint16_t han_process(han_ctx_t* ctx, char key)
       case S_JONG:
         c = shift ? KEY_JONG_SH[key] : KEY_JONG[key];
         if (c >= 0 && (ctx->jong == 0 || (c = combine_jong(ctx->jong, c)) >= 0)) {
-          ctx->jong = c;
-          key = KEY_NONE;
-        } else {
-          if (KEY_JUNG[key] >= 0) {
-            c = JONG_TO_CHO[ctx->jong];
-            ctx->jong = JONG_BS[ctx->jong];
+          // 종성이며, 입력된 종성이 없거나, 기존 종성과 합칠 수 있을 때
+          // 예) 가+ㄱ, 갑+ㅅ
+          if (ctx->callback(ctx->cho, ctx->jung, c)) {
+            // 음절 리스트에 있다면
+            ctx->jong = c;
+            key = KEY_NONE;
           } else {
+            // 음절 리스트에 없다면
+            // 예) 가+ㅎ, 각+ㅅ
+            ret = han_preedit(ctx);
+            ctx->cho = -1;
+            ctx->jung = -1;
+            ctx->jong = 0;
+            ctx->state = S_CHO;
+          }
+        } else {
+          // 종성이 아니며, 받침에 올 수 없는 자음일 때
+          if (KEY_JUNG[key] >= 0) {
+            // 입력된 키가 중성이면
+            c = JONG_TO_CHO[ctx->jong];  // 뒷 종성을 가져옴
+            c2 = JONG_BS[ctx->jong];  // 앞 종성을 가져옴
+            if (ctx->callback(ctx->cho, ctx->jung, c2)) {
+              // 음절 리스트에 있다면
+              ctx->jong = c2;
+            } else {
+              // 음절 리스트에 없다면, 다시 초성부터
+              // 예) '값'은 있는데 '갑'은 없는 경우
+              ret = han_preedit(ctx);
+              // TODO: implementation
+            }
+          } else {
+            // 입력된 키가 중성이 아니라면
             c = -1;
           }
 
-          ret = make_code(ctx);
+          ret = han_preedit(ctx);
           ctx->cho = c;
           ctx->jung = -1;
           ctx->jong = 0;
@@ -284,6 +340,5 @@ uint16_t han_process(han_ctx_t* ctx, char key)
         break;
     }
   }
-
   return ret;
 }
