@@ -10,7 +10,7 @@
 
 
 #define TEST(a, b) { \
-  fwprintf(stderr, L"[%s:%d] TEST(%S, %S)\n", __FILE__, __LINE__, a, b); \
+  fwprintf(stderr, L"[%s:%d] %s(%S, %S)\n", __FILE__, __LINE__, __FUNCTION__, a, b); \
 }
 
 #define ASSERT(expr, ...) { \

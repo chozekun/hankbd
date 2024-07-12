@@ -10,7 +10,8 @@ struct han_ctx_t_
   char cho;
   char jung;
   char jong;
-  han_callback_t callback;
+  uint16_t* charset;
+  uint16_t charset_size;
 };
 
 /*
@@ -149,12 +150,7 @@ static char combine_jong(char ch1, char ch2)
   return combine(COMBINE_JONG, countof(COMBINE_JONG), ch1, ch2);
 }
 
-static bool default_callback(char cho, char jung, char jong)
-{
-  return true;
-}
-
-uint16_t make_code(char cho, char jung, char jong)
+static uint16_t make_code(char cho, char jung, char jong)
 {
   if (cho >= 0 && jung >= 0) {
     return L'가' + cho * (21 * 28) + jung * 28 + jong;
@@ -166,11 +162,46 @@ uint16_t make_code(char cho, char jung, char jong)
   return 0;
 }
 
+static int16_t binary_search(const uint16_t chars[], int16_t l, int16_t r, uint16_t x)
+{
+  // the loop will run till there are elements in the
+  // subarray as l > r means that there are no elements to
+  // consider in the given subarray
+  while (l <= r) {
+    int16_t m = l + ((r - l) >> 1);
+    if (chars[m] == x) {
+      return m;
+    }
+    if (chars[m] < x) {
+      l = m + 1;
+    } else {
+      r = m - 1;
+    }
+  }
+  return -1;
+}
+
+static int compare(const void* a, const void* b)
+{
+  uint16_t x = *(uint16_t*)a;
+  uint16_t y = *(uint16_t*)b;
+  return x > y ? 1 : x < y ? -1 : 0;
+}
+
+static bool find_charset(han_ctx_t* ctx, char cho, char jung, char jong)
+{
+  if (ctx->charset) {
+    uint16_t code = make_code(cho, jung, jong);
+    return binary_search(ctx->charset, 0, ctx->charset_size-1, code) >= 0;
+  }
+  return true;
+}
+
 han_ctx_t* han_new()
 {
   han_ctx_t* ctx = (han_ctx_t*)malloc(sizeof(han_ctx_t));
   han_init(ctx);
-  han_set_callback(ctx, default_callback);
+  han_set_charset(ctx, NULL, 0);
   return ctx;
 }
 
@@ -189,9 +220,11 @@ void han_init(han_ctx_t* ctx)
   ctx->jong = 0;
 }
 
-void han_set_callback(han_ctx_t* ctx, han_callback_t callback)
+void han_set_charset(han_ctx_t* ctx, uint16_t* charset, uint16_t size)
 {
-  ctx->callback = callback;
+  qsort(charset, size, sizeof(uint16_t), compare);
+  ctx->charset = charset;
+  ctx->charset_size = size;
 }
 
 bool han_is_empty(han_ctx_t* ctx)
@@ -228,7 +261,7 @@ bool han_backspace(han_ctx_t* ctx)
 uint16_t han_process(han_ctx_t* ctx, char key)
 {
   bool shift;
-  int16_t c, c2;
+  int16_t c, c0, c1, c2;
   uint16_t ret = 0;
 
   if ('a' <= key && key <= 'z') {
@@ -254,7 +287,7 @@ uint16_t han_process(han_ctx_t* ctx, char key)
             key = KEY_NONE;
           } else {
             // 기존에 입력된 초성이 있을 때
-            // 예) ㄱ+ㄱ
+            // 예) ㄱ+ㄴ
             ret = han_preedit(ctx);
             ctx->cho = -1;
           }
@@ -268,22 +301,23 @@ uint16_t han_process(han_ctx_t* ctx, char key)
         c = shift ? KEY_JUNG_SH[key] : KEY_JUNG[key];
         if (c >= 0 && (ctx->jung == -1 || (c = combine_jung(ctx->jung, c)) >= 0)) {
           // 중성이며, 입력된 중성이 없거나, 기존 중성과 합칠 수 있을 때
-          // 예) ㄱ+ㅗ, 고+ㅏ
-          if (ctx->callback(ctx->cho, c, 0)) {
-            // 음절 리스트에 있다면
+          if (find_charset(ctx, ctx->cho, c, 0)) {
+            // 글자셋에 있다면
+            // 예) ㄱ+ㅗ, 고+ㅏ
             ctx->jung = c;
             key = KEY_NONE;
           } else {
-            // 음절 리스트에 없다면
-            // 예) ㄲ+ㅒ
+            // 유니코드엔 있으나 글자셋에 없다면
+            // 예) ㄴ+ㅒ
             ret = han_preedit(ctx);
             ctx->cho = -1;
             ctx->jung = -1;
             ctx->state = S_CHO;
           }
         } else if (ctx->cho == -1) {
-          // 초성이 없고, 기존 중성과 합칠 수 없을 때 (윗 부분과 동일 로직)
-          // 예) ㅏ, ㅗ+ㅏ
+          // 초성이 없거나, 중성이 아니거나, 기존 중성과 합칠 수 없을 때
+          // (사실상 윗 부분과 동일 로직)
+          // 예) ㅗ, ㅗ+ㅓ, ㅗ+ㅎ
           ret = han_preedit(ctx);
           ctx->jung = -1;
           ctx->state = S_CHO;
@@ -297,14 +331,14 @@ uint16_t han_process(han_ctx_t* ctx, char key)
         c = shift ? KEY_JONG_SH[key] : KEY_JONG[key];
         if (c >= 0 && (ctx->jong == 0 || (c = combine_jong(ctx->jong, c)) >= 0)) {
           // 종성이며, 입력된 종성이 없거나, 기존 종성과 합칠 수 있을 때
-          // 예) 가+ㄱ, 갑+ㅅ
-          if (ctx->callback(ctx->cho, ctx->jung, c)) {
-            // 음절 리스트에 있다면
+          if (find_charset(ctx, ctx->cho, ctx->jung, c)) {
+            // 글자셋에 있다면
+            // 예) 가+ㄱ, 갈+ㄱ
             ctx->jong = c;
             key = KEY_NONE;
           } else {
-            // 음절 리스트에 없다면
-            // 예) 가+ㅎ, 각+ㅅ
+            // 유니코드엔 있으나 글자셋에 없다면
+            // 예) 가+ㅋ, 각+ㅅ
             ret = han_preedit(ctx);
             ctx->cho = -1;
             ctx->jung = -1;
@@ -312,22 +346,25 @@ uint16_t han_process(han_ctx_t* ctx, char key)
             ctx->state = S_CHO;
           }
         } else {
-          // 종성이 아니며, 받침에 올 수 없는 자음일 때
-          if (KEY_JUNG[key] >= 0) {
+          // 종성이 아니거나, 기존 종성과 합칠 수 없을 때
+          c2 = shift ? KEY_JUNG_SH[key] : KEY_JUNG[key];
+          if (c2 >= 0) {
             // 입력된 키가 중성이면
-            c = JONG_TO_CHO[ctx->jong];  // 뒷 종성을 가져옴
-            c2 = JONG_BS[ctx->jong];  // 앞 종성을 가져옴
-            if (ctx->callback(ctx->cho, ctx->jung, c2)) {
-              // 음절 리스트에 있다면
-              ctx->jong = c2;
+            c1 = JONG_TO_CHO[ctx->jong];  // 뒷 종성을 가져옴
+            c0 = JONG_BS[ctx->jong];  // 앞 종성을 가져옴
+            if (find_charset(ctx, c1, c2, 0)) {
+              // 새로 결합될 글자가 글자셋에 있다면
+              // 예) 각+ㅏ, 갉+ㅏ
+              ctx->jong = c0;
+              c = c1;
             } else {
-              // 음절 리스트에 없다면, 다시 초성부터
-              // 예) '값'은 있는데 '갑'은 없는 경우
-              ret = han_preedit(ctx);
-              // TODO: implementation
+              // 새로 결합될 글자가 유니코드엔 있으나 글자셋에 없다면
+              // 예) 간+ㅒ, 갊+ㅒ
+              c = -1;
             }
           } else {
-            // 입력된 키가 중성이 아니라면
+            // 기존 종성과 합칠 수 없을 때
+            // 예) 각+ㄴ
             c = -1;
           }
 
