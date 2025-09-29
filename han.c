@@ -89,7 +89,7 @@ static const char KEY_JONG_SH[] = {
 
 static const char JONG_TO_CHO[] = {
 //    ㄱ   ㄲ    ㄳ   ㄴ   ㄵ   ㄶ   ㄷ   ㄹ   ㄺ   ㄻ   ㄼ   ㄽ   ㄾ   ㄿ   ㅀ   ㅁ   ㅂ   ㅄ   ㅅ   ㅆ    ㅇ   ㅈ   ㅊ    ㅋ   ㅌ   ㅍ   ㅎ
-  -1, G__, GG__, S__, N__, J__, H__, D__, R__, G__, M__, B__, S__, T__, P__, H__, M__, B__, S__, S__, SS__, O__, J__, CH__, K__, T__, P__, H__ 
+  -1, G__, GG__, S__, N__, J__, H__, D__, R__, G__, M__, B__, S__, T__, P__, H__, M__, B__, S__, S__, SS__, O__, J__, CH__, K__, T__, P__, H__
 };
 
 static const char JONG_BS[] = {
@@ -273,6 +273,8 @@ uint16_t han_process(han_ctx_t* ctx, char key)
             ctx->jong = JONG_BS[ctx->jong];
           } else {
             c = -1;
+            // 버그 수정: 모음으로도 사용할 수 없는 키는 처리 완료 표시
+            key = KEY_NONE;
           }
 
           ret = make_code(ctx);
